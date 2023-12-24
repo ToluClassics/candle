@@ -123,6 +123,8 @@ enum WhichModel {
     V1,
     #[value(name = "1.5")]
     V1_5,
+    #[value(name = "2")]
+    V2,
     PuffinPhiV2,
     PhiHermes,
 }
@@ -143,7 +145,10 @@ struct Args {
     verbose_prompt: bool,
 
     #[arg(long)]
-    prompt: String,
+    prompt: Option<String>,
+
+    #[arg(long)]
+    mmlu_dir: Option<String>,
 
     /// The temperature used to generate samples.
     #[arg(long)]
@@ -158,7 +163,7 @@ struct Args {
     seed: u64,
 
     /// The length of the sample to generate (in tokens).
-    #[arg(long, short = 'n', default_value_t = 100)]
+    #[arg(long, short = 'n', default_value_t = 5000)]
     sample_len: usize,
 
     #[arg(long)]
@@ -225,6 +230,7 @@ fn main() -> Result<()> {
                 match args.model {
                     WhichModel::V1 => "microsoft/phi-1".to_string(),
                     WhichModel::V1_5 => "microsoft/phi-1_5".to_string(),
+                    WhichModel::V2 => "microsoft/phi-2".to_string(),
                     WhichModel::PuffinPhiV2 | WhichModel::PhiHermes => {
                         "lmz/candle-quantized-phi".to_string()
                     }
@@ -241,7 +247,9 @@ fn main() -> Result<()> {
                 match args.model {
                     WhichModel::V1 => "refs/pr/2".to_string(),
                     WhichModel::V1_5 => "refs/pr/18".to_string(),
-                    WhichModel::PuffinPhiV2 | WhichModel::PhiHermes => "main".to_string(),
+                    WhichModel::V2 | WhichModel::PuffinPhiV2 | WhichModel::PhiHermes => {
+                        "main".to_string()
+                    }
                 }
             }
         }
@@ -250,27 +258,32 @@ fn main() -> Result<()> {
     let tokenizer_filename = match args.tokenizer {
         Some(file) => std::path::PathBuf::from(file),
         None => match args.model {
-            WhichModel::V1 | WhichModel::V1_5 => repo.get("tokenizer.json")?,
+            WhichModel::V1 | WhichModel::V1_5 | WhichModel::V2 => repo.get("tokenizer.json")?,
             WhichModel::PuffinPhiV2 | WhichModel::PhiHermes => {
                 repo.get("tokenizer-puffin-phi-v2.json")?
             }
         },
     };
-    let filename = match args.weight_file {
-        Some(weight_file) => std::path::PathBuf::from(weight_file),
+    let filenames = match args.weight_file {
+        Some(weight_file) => vec![std::path::PathBuf::from(weight_file)],
         None => {
             if args.quantized {
                 match args.model {
-                    WhichModel::V1 => repo.get("model-v1-q4k.gguf")?,
-                    WhichModel::V1_5 => repo.get("model-q4k.gguf")?,
-                    WhichModel::PuffinPhiV2 => repo.get("model-puffin-phi-v2-q4k.gguf")?,
-                    WhichModel::PhiHermes => repo.get("model-phi-hermes-1_3B-q4k.gguf")?,
+                    WhichModel::V1 => vec![repo.get("model-v1-q4k.gguf")?],
+                    WhichModel::V1_5 => vec![repo.get("model-q4k.gguf")?],
+                    WhichModel::V2 => vec![repo.get("model-v2-q4k.gguf")?],
+                    WhichModel::PuffinPhiV2 => vec![repo.get("model-puffin-phi-v2-q4k.gguf")?],
+                    WhichModel::PhiHermes => vec![repo.get("model-phi-hermes-1_3B-q4k.gguf")?],
                 }
             } else {
                 match args.model {
-                    WhichModel::V1 | WhichModel::V1_5 => repo.get("model.safetensors")?,
-                    WhichModel::PuffinPhiV2 => repo.get("model-puffin-phi-v2.safetensors")?,
-                    WhichModel::PhiHermes => repo.get("model-phi-hermes-1_3B.safetensors")?,
+                    WhichModel::V1 | WhichModel::V1_5 => vec![repo.get("model.safetensors")?],
+                    WhichModel::V2 => vec![
+                        repo.get("model-00001-of-00002.safetensors")?,
+                        repo.get("model-00002-of-00002.safetensors")?,
+                    ],
+                    WhichModel::PuffinPhiV2 => vec![repo.get("model-puffin-phi-v2.safetensors")?],
+                    WhichModel::PhiHermes => vec![repo.get("model-phi-hermes-1_3B.safetensors")?],
                 }
             }
         }
@@ -282,32 +295,127 @@ fn main() -> Result<()> {
     let config = match args.model {
         WhichModel::V1 => Config::v1(),
         WhichModel::V1_5 => Config::v1_5(),
+        WhichModel::V2 => Config::v2(),
         WhichModel::PuffinPhiV2 => Config::puffin_phi_v2(),
         WhichModel::PhiHermes => Config::phi_hermes_1_3b(),
     };
     let (model, device) = if args.quantized {
-        let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(&filename)?;
-        let model = QMixFormer::new(&config, vb)?;
+        let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(&filenames[0])?;
+        let model = match args.model {
+            WhichModel::V2 => QMixFormer::new_v2(&config, vb)?,
+            _ => QMixFormer::new(&config, vb)?,
+        };
         (Model::Quantized(model), Device::Cpu)
     } else {
         let device = candle_examples::device(args.cpu)?;
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[filename], DType::F32, &device)? };
-        let model = MixFormer::new(&config, vb)?;
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, DType::F32, &device)? };
+        let model = match args.model {
+            WhichModel::V2 => MixFormer::new_v2(&config, vb)?,
+            _ => MixFormer::new(&config, vb)?,
+        };
         (Model::MixFormer(model), device)
     };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        args.verbose_prompt,
-        &device,
-    );
-    pipeline.run(&args.prompt, args.sample_len)?;
+    match (args.prompt, args.mmlu_dir) {
+        (None, None) | (Some(_), Some(_)) => {
+            anyhow::bail!("exactly one of --prompt and --mmlu-dir must be specified")
+        }
+        (Some(prompt), None) => {
+            let mut pipeline = TextGeneration::new(
+                model,
+                tokenizer,
+                args.seed,
+                args.temperature,
+                args.top_p,
+                args.repeat_penalty,
+                args.repeat_last_n,
+                args.verbose_prompt,
+                &device,
+            );
+            pipeline.run(&prompt, args.sample_len)?;
+        }
+        (None, Some(mmlu_dir)) => mmlu(model, tokenizer, &device, mmlu_dir)?,
+    }
+    Ok(())
+}
+
+fn mmlu<P: AsRef<std::path::Path>>(
+    mut model: Model,
+    tokenizer: Tokenizer,
+    device: &Device,
+    mmlu_dir: P,
+) -> anyhow::Result<()> {
+    for dir_entry in mmlu_dir.as_ref().read_dir()?.flatten() {
+        let dir_entry = dir_entry.path();
+        let theme = match dir_entry.file_stem().and_then(|v| v.to_str()) {
+            None => "".to_string(),
+            Some(v) => match v.strip_suffix("_test") {
+                None => v.replace('_', " "),
+                Some(v) => v.replace('_', " "),
+            },
+        };
+        if dir_entry.extension().as_ref().and_then(|v| v.to_str()) != Some("csv") {
+            continue;
+        }
+        println!("reading {dir_entry:?}");
+        let dir_entry = std::fs::File::open(dir_entry)?;
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(dir_entry);
+        let token_a = tokenizer.token_to_id("A").unwrap();
+        let token_b = tokenizer.token_to_id("B").unwrap();
+        let token_c = tokenizer.token_to_id("C").unwrap();
+        let token_d = tokenizer.token_to_id("D").unwrap();
+        for row in reader.records() {
+            let row = match row {
+                Err(_) => continue,
+                Ok(row) => row,
+            };
+            if row.len() < 5 {
+                continue;
+            }
+            let question = row.get(0).unwrap();
+            let answer_a = row.get(1).unwrap();
+            let answer_b = row.get(2).unwrap();
+            let answer_c = row.get(3).unwrap();
+            let answer_d = row.get(4).unwrap();
+            let answer = row.get(5).unwrap();
+            let prompt = format!(
+                    "{} {theme}.\n{question}\nA. {answer_a}\nB. {answer_b}\nC. {answer_c}\nD. {answer_d}\nAnswer:\n",
+                    "The following are multiple choice questions (with answers) about"
+                );
+            let tokens = tokenizer.encode(prompt.as_str(), true).map_err(E::msg)?;
+            let tokens = tokens.get_ids().to_vec();
+            let input = Tensor::new(tokens, device)?.unsqueeze(0)?;
+            let logits = match &mut model {
+                Model::MixFormer(m) => {
+                    m.clear_kv_cache();
+                    m.forward(&input)?
+                }
+                Model::Quantized(m) => {
+                    m.clear_kv_cache();
+                    m.forward(&input)?
+                }
+            };
+            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?;
+            let logits_v: Vec<f32> = logits.to_vec1()?;
+            let pr_a = logits_v[token_a as usize];
+            let pr_b = logits_v[token_b as usize];
+            let pr_c = logits_v[token_c as usize];
+            let pr_d = logits_v[token_d as usize];
+            let model_answer = if pr_a > pr_b && pr_a > pr_c && pr_a > pr_d {
+                "A"
+            } else if pr_b > pr_c && pr_b > pr_d {
+                "B"
+            } else if pr_c > pr_d {
+                "C"
+            } else {
+                "D"
+            };
+
+            println!("{prompt}\n -> {model_answer} vs {answer}");
+        }
+    }
     Ok(())
 }

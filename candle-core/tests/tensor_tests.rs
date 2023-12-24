@@ -1,4 +1,4 @@
-use candle_core::{test_device, test_utils, DType, Device, IndexOp, Result, Tensor};
+use candle_core::{test_device, test_utils, DType, Device, IndexOp, Result, Tensor, D};
 
 fn zeros(device: &Device) -> Result<()> {
     let tensor = Tensor::zeros((5, 2), DType::F32, device)?;
@@ -28,6 +28,14 @@ fn ones(device: &Device) -> Result<()> {
     assert_eq!(
         Tensor::ones((2, 3), DType::F64, device)?.to_vec2::<f64>()?,
         [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+    );
+    Ok(())
+}
+
+fn full(device: &Device) -> Result<()> {
+    assert_eq!(
+        Tensor::full(42u32, (2, 3), device)?.to_vec2::<u32>()?,
+        [[42, 42, 42], [42, 42, 42]],
     );
     Ok(())
 }
@@ -1070,35 +1078,61 @@ fn randn(device: &Device) -> Result<()> {
     Ok(())
 }
 
-test_device!(zeros, zeros_cpu, zeros_gpu);
-test_device!(ones, ones_cpu, ones_gpu);
-test_device!(arange, arange_cpu, arange_gpu);
-test_device!(add_mul, add_mul_cpu, add_mul_gpu);
-test_device!(tensor_2d, tensor_2d_cpu, tensor_2d_gpu);
-test_device!(narrow, narrow_cpu, narrow_gpu);
-test_device!(broadcast, broadcast_cpu, broadcast_gpu);
-test_device!(cat, cat_cpu, cat_gpu);
-test_device!(sum, sum_cpu, sum_gpu);
-test_device!(min, min_cpu, min_gpu);
-test_device!(max, max_cpu, max_gpu);
-test_device!(argmax, argmax_cpu, argmax_gpu);
-test_device!(argmin, argmin_cpu, argmin_gpu);
-test_device!(transpose, transpose_cpu, transpose_gpu);
-test_device!(unary_op, unary_op_cpu, unary_op_gpu);
-test_device!(binary_op, binary_op_cpu, binary_op_gpu);
-test_device!(embeddings, embeddings_cpu, embeddings_gpu);
-test_device!(cmp, cmp_cpu, cmp_gpu);
-test_device!(matmul, matmul_cpu, matmul_gpu);
-test_device!(broadcast_matmul, broadcast_matmul_cpu, broadcast_matmul_gpu);
-test_device!(broadcasting, broadcasting_cpu, broadcasting_gpu);
-test_device!(index_select, index_select_cpu, index_select_gpu);
-test_device!(index_add, index_add_cpu, index_add_gpu);
-test_device!(gather, gather_cpu, gather_gpu);
-test_device!(scatter_add, scatter_add_cpu, scatter_add_gpu);
-test_device!(slice_scatter, slice_scatter_cpu, slice_scatter_gpu);
-test_device!(randn, randn_cpu, randn_gpu);
-test_device!(clamp, clamp_cpu, clamp_gpu);
-test_device!(var, var_cpu, var_gpu);
+test_device!(zeros, zeros_cpu, zeros_gpu, zeros_metal);
+test_device!(ones, ones_cpu, ones_gpu, ones_metal);
+test_device!(full, full_cpu, full_gpu, full_metal);
+test_device!(arange, arange_cpu, arange_gpu, arange_metal);
+test_device!(add_mul, add_mul_cpu, add_mul_gpu, add_mul_metal);
+test_device!(tensor_2d, tensor_2d_cpu, tensor_2d_gpu, tensor_2d_metal);
+test_device!(narrow, narrow_cpu, narrow_gpu, narrow_metal);
+test_device!(broadcast, broadcast_cpu, broadcast_gpu, broadcast_metal);
+test_device!(cat, cat_cpu, cat_gpu, cat_metal);
+test_device!(sum, sum_cpu, sum_gpu, sum_metal);
+test_device!(min, min_cpu, min_gpu, min_metal);
+test_device!(max, max_cpu, max_gpu, max_metal);
+test_device!(argmax, argmax_cpu, argmax_gpu, argmax_metal);
+test_device!(argmin, argmin_cpu, argmin_gpu, argmin_metal);
+test_device!(transpose, transpose_cpu, transpose_gpu, transpose_metal);
+test_device!(unary_op, unary_op_cpu, unary_op_gpu, unary_op_metal);
+test_device!(binary_op, binary_op_cpu, binary_op_gpu, binary_op_metal);
+test_device!(embeddings, embeddings_cpu, embeddings_gpu, embeddings_metal);
+test_device!(cmp, cmp_cpu, cmp_gpu, cmp_metal);
+test_device!(matmul, matmul_cpu, matmul_gpu, matmul_metal);
+test_device!(
+    broadcast_matmul,
+    broadcast_matmul_cpu,
+    broadcast_matmul_gpu,
+    broadcast_matmul_metal
+);
+test_device!(
+    broadcasting,
+    broadcasting_cpu,
+    broadcasting_gpu,
+    broadcasting_metal
+);
+test_device!(
+    index_select,
+    index_select_cpu,
+    index_select_gpu,
+    index_select_metal
+);
+test_device!(index_add, index_add_cpu, index_add_gpu, index_add_metal);
+test_device!(gather, gather_cpu, gather_gpu, gather_metal);
+test_device!(
+    scatter_add,
+    scatter_add_cpu,
+    scatter_add_gpu,
+    scatter_add_metal
+);
+test_device!(
+    slice_scatter,
+    slice_scatter_cpu,
+    slice_scatter_gpu,
+    slice_scatter_metal
+);
+test_device!(randn, randn_cpu, randn_gpu, randn_metal);
+test_device!(clamp, clamp_cpu, clamp_gpu, clamp_metal);
+test_device!(var, var_cpu, var_gpu, var_metal);
 
 // There was originally a bug on the CPU implementation for randn
 // https://github.com/huggingface/candle/issues/381
@@ -1194,5 +1228,28 @@ fn cumsum() -> Result<()> {
         t.cumsum(0)?.to_vec2::<f32>()?,
         [[3.0, 1.0, 4.0, 1.0, 5.0], [5.0, 2.0, 11.0, 9.0, 7.0]]
     );
+    Ok(())
+}
+
+/// A helper function for floating point comparison. Both a and b must be 1D Tensor and contains the same amount of data.
+/// Assertion passes if the difference of all pairs of a and b is smaller than epsilon.
+fn assert_close(a: &Tensor, b: &Tensor, epsilon: f64) -> Result<()> {
+    let a_vec: Vec<f64> = a.to_vec1()?;
+    let b_vec: Vec<f64> = b.to_vec1()?;
+
+    assert_eq!(a_vec.len(), b_vec.len());
+    for (a, b) in a_vec.iter().zip(b_vec.iter()) {
+        assert!((a - b).abs() < epsilon);
+    }
+    Ok(())
+}
+
+#[test]
+fn logsumexp() -> Result<()> {
+    let input = Tensor::new(&[[1f64, 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
+    let output = input.logsumexp(D::Minus1)?;
+    // The expectations obtained from pytorch.
+    let expected = Tensor::new(&[3.4076, 6.4076], &Device::Cpu)?;
+    assert_close(&output, &expected, 0.00001)?;
     Ok(())
 }

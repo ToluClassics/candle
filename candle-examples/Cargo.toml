@@ -11,12 +11,12 @@ readme = "README.md"
 
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
-candle = { path = "../candle-core", version = "0.3.1", package = "candle-core" }
-candle-datasets = { path = "../candle-datasets", version = "0.3.1" }
-candle-nn = { path = "../candle-nn", version = "0.3.1" }
-candle-transformers = { path = "../candle-transformers", version = "0.3.1" }
-candle-flash-attn = { path = "../candle-flash-attn", version = "0.3.1", optional = true }
-candle-onnx = { path = "../candle-onnx", version = "0.3.1", optional = true }
+candle = { path = "../candle-core", version = "0.3.2", package = "candle-core" }
+candle-datasets = { path = "../candle-datasets", version = "0.3.2" }
+candle-nn = { path = "../candle-nn", version = "0.3.2" }
+candle-transformers = { path = "../candle-transformers", version = "0.3.2" }
+candle-flash-attn = { path = "../candle-flash-attn", version = "0.3.2", optional = true }
+candle-onnx = { path = "../candle-onnx", version = "0.3.2", optional = true }
 cudarc = { workspace = true, optional = true }
 half = { workspace = true, optional = true }
 image = { workspace = true }
@@ -28,6 +28,7 @@ safetensors = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokenizers = { workspace = true, features = ["onig"] }
+csv = "1.3.0"
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -57,6 +58,7 @@ flash-attn = ["cuda", "candle-transformers/flash-attn", "dep:candle-flash-attn"]
 mkl = ["dep:intel-mkl-src", "candle/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 nccl = ["cuda", "cudarc/nccl", "dep:half"]
 onnx = ["candle-onnx"]
+metal = ["candle/metal", "candle-nn/metal"]
 
 [[example]]
 name = "llama_multiprocess"
